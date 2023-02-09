@@ -15,9 +15,13 @@ if not os.environ.get('CLOUDFLARE_API_KEY'):
 
 cloudflare = Cloudflare(os.environ.get('CLOUDFLARE_API_KEY'))
 
+routes_to_exclude = [
+    'socket.io/'
+]
+
 access_log = '/var/log/nginx/access.log'
-# Access log format:
-regex = r"(?P<ipaddress>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) - - \[(?P<dateandtime>\d{2}\/[a-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} (\+|\-)\d{4})\] \"(\w+) (?P<url>.+?(?=\ http\/1.1\")) http\/1.1\" \d{3} \d+ \"(?P<http_host>.+?(?=\"))\" (?P<http_user_agent>.+\s?(?=\ ))"
+# Access log format (ipv4)
+regex = r"(?P<ipaddress>.+?) - - \[(?P<dateandtime>\d{2}\/[a-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} (\+|\-)\d{4})\] \"(\w+) (?P<url>.+?(?=\ http\/1.1\")) http\/1.1\" \d{3} \d+ \"(?P<http_host>.+?(?=\"))\" (?P<http_user_agent>.+\s?(?=\ ))"
 lineformat = re.compile(regex, re.IGNORECASE)
 
 def parse_log_line(line):
@@ -36,20 +40,16 @@ p.register(f.stdout)
 
 # Collect top 10 URLs in the last 5 minutes, print it and then drop cache
 top_urls = {}
-
-def print_top_urls():
-    global top_urls
-    # Sort by value, print top 10 (key, value) pairs
-    sorted_urls = sorted(top_urls.items(), key=lambda x: x[1], reverse=True)
-    print(sorted_urls[:10])
-    print(top_urls)
-    print('---------------------')
-    top_urls = {}
+last_call = time.time()
 
 def find_ddos_attack():
     # Determine if there is a ddos attack. Check if anomaly big count of requests to one endpoint (x10 times more than average)
     # If there is a ddos attack, deploy a firewall rule to block all traffic to this endpoint
-    global top_urls
+    global top_urls, rps, last_call
+
+    # Calculate rps
+    
+
     
     top_20_urls = sorted(top_urls.items(), key=lambda x: x[1], reverse=True)[:20]
 
@@ -58,6 +58,9 @@ def find_ddos_attack():
     for url in top_20_urls:
         total += url[1]
     average = total / len(top_20_urls)
+    rps = total / (time.time() - last_call)
+    print('RPS', rps)
+    print('Average', average)
 
     # Check if there is a ddos attack
     for url in top_20_urls:
@@ -66,11 +69,14 @@ def find_ddos_attack():
 
             # Deploy firewall rule
 
-
-# Run sheduler every 5 minutes
-#task = sched.scheduler(time.time, time.sleep)
-#task.enter(30, 1, print_top_urls, ())
-#task.run()
+def print_top_urls():
+    global top_urls
+    # Sort by value, print top 10 (key, value) pairs
+    sorted_urls = sorted(top_urls.items(), key=lambda x: x[1], reverse=True)
+    print(sorted_urls[:10])
+    print('---------------------')
+    find_ddos_attack()
+    top_urls = {}
 
 lines_scanned = 0
 
@@ -80,20 +86,21 @@ while True:
         data = parse_log_line(line)
         if data:
             hostname = data['http_host']
-            url = data['url']
+            url = data['url'].split("?")[0]
+            if any(route in url for route in routes_to_exclude):
+                # print('Excluded', url)
+                continue
+            ip = data['ipaddress']
             full_url = hostname + url
-            print(full_url, lines_scanned)
-            # Return to main process
+            print(ip, full_url, lines_scanned)
             if full_url in top_urls:
                 top_urls[full_url] += 1
             else:
                 top_urls[full_url] = 1
         else:
-            print('No match', line)
+            print('No match line > ', line)
         lines_scanned += 1
 
-        if(lines_scanned % 1000 == 0):
+
+        if(lines_scanned % 200 == 0):
             print_top_urls()
-
-
-    time.sleep(1)
